@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "gripfetch-apt"
-version = "0.1.0"
+version = "0.1.1"
 description = "gripsack sugar: fetch Debian packages through the gripfetch-apt plugin (wraps the host's apt)"
 readme = "README.md"
 requires-python = ">=3.10"
