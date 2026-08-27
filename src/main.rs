@@ -12,6 +12,7 @@ mod apt;
 mod ar;
 mod deb;
 mod proto;
+mod tree;
 mod version;
 
 use proto::{Fail, Request};
@@ -103,7 +104,7 @@ fn fetch_inner(request: &Request) -> Result<Value, Fail> {
             proto::INDEX_HASH_UNKNOWN,
             "warning",
             &format!(
-                "the apt index for {package}={} carries no SHA256 — the pin will be computed from the downloaded bytes",
+                "the apt index for {package}={} carries no SHA256 — the .deb cannot be verified against the index (the pin is the staged tree hash either way)",
                 chosen.version
             ),
             None,
@@ -115,35 +116,22 @@ fn fetch_inner(request: &Request) -> Result<Value, Fail> {
     let scratch = ScratchDir::new();
     let download = apt::download(&package, &chosen.version, scratch.path())?;
     proto::emit_progress(download.size, Some(download.size));
-    let sha256 = apt::sha256_file(&download.deb)?;
+    let deb_sha256 = apt::sha256_file(&download.deb)?;
 
-    if let Some(locked) = &request.locked {
-        if let Some(expected) = locked.sha256.as_deref().filter(|s| !s.is_empty()) {
-            if !expected.eq_ignore_ascii_case(&sha256) {
-                return Err(Fail::new(
-                    proto::HASH_MISMATCH,
-                    format!(
-                        "locked pin for {package}={} expects sha256 {expected} but the mirror served {sha256} — refusing to stage",
-                        locked.version.as_deref().unwrap_or("")
-                    ),
-                )
-                .with_help("the mirror content changed under the pin; `grip update` re-pins, or pin the version your audit approved"));
-            }
-        }
-    }
+    // transport integrity: the .deb bytes must match the Packages
+    // index hash when the index carries one (independent of the pin)
     if let Some(expected) = index_sha256.as_deref().filter(|s| !s.is_empty()) {
-        if !expected.eq_ignore_ascii_case(&sha256) {
+        if !expected.eq_ignore_ascii_case(&deb_sha256) {
             return Err(Fail::new(
                 proto::HASH_MISMATCH,
                 format!(
-                    "the apt index sha256 {expected} does not match the downloaded .deb ({sha256}) for {package}={}",
+                    "the apt index sha256 {expected} does not match the downloaded .deb ({deb_sha256}) for {package}={}",
                     chosen.version
                 ),
             )
             .with_help("a truncated or tampered download — retry, then report the mirror"));
         }
     }
-
     let dest = request
         .dest_dir
         .as_deref()
@@ -151,8 +139,27 @@ fn fetch_inner(request: &Request) -> Result<Value, Fail> {
     let deb_bytes = std::fs::read(&download.deb)
         .map_err(|e| Fail::new(proto::DOWNLOAD_FAILED, format!("re-reading the .deb: {e}")))?;
     let mut progress = |count: u64| proto::emit_progress(count, None);
-    let staged = deb::extract(&deb_bytes, dest, &mut progress)?;
-    let _ = staged;
+    deb::extract(&deb_bytes, dest, &mut progress)?;
+
+    // reproduce-exactly: locked.sha256 is the CORE's canonical tree
+    // hash of the previously staged payload, so the check is on what
+    // we just staged — stage first, then compare tree identities.
+    // (the core re-checks the pin itself; this is our loud refusal)
+    let tree_sha256 = tree::canonical_tree_hash(dest)?;
+    if let Some(locked) = &request.locked {
+        if let Some(expected) = locked.sha256.as_deref().filter(|s| !s.is_empty()) {
+            if !expected.eq_ignore_ascii_case(&tree_sha256) {
+                return Err(Fail::new(
+                    proto::HASH_MISMATCH,
+                    format!(
+                        "locked pin for {package}={} expects tree sha256 {expected} but the staged payload hashes to {tree_sha256} — refusing to hand it over",
+                        locked.version.as_deref().unwrap_or("")
+                    ),
+                )
+                .with_help("the mirror content changed under the pin; `grip update` re-pins, or pin the version your audit approved"));
+            }
+        }
+    }
 
     let mirror = download
         .mirror
@@ -166,14 +173,16 @@ fn fetch_inner(request: &Request) -> Result<Value, Fail> {
 
     Ok(json!({
         "version": chosen.version,
-        "sha256": sha256,
+        // advisory (the core computes identity itself): the staged
+        // tree's canonical hash — what the next locked.sha256 will be
+        "sha256": tree_sha256,
         "url": url,
         "provenance": {
             "apt_version": apt_version,
             "mirror": mirror,
             "package": package,
             "version": chosen.version,
-            "sha256": sha256,
+            "sha256": deb_sha256,
             "filename": filename,
         },
     }))

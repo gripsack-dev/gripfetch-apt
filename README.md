@@ -58,9 +58,16 @@ matching any of the given substrings, e.g. `["internal.example.com"]`).
 | --- | --- |
 | resolve (no lock / no version) | enumerate via `apt-cache madison <pkg>` (fallback `apt list -a <pkg>`), pick the newest by Debian version order, report it in provenance + a `W01` warning |
 | fetch | `apt-get download <pkg>[=<version>]` (no root) → hash the `.deb` bytes → verify against the Packages-index `SHA256` → extract `data.tar.{gz,xz,zst}` into `dest_dir` with a path-traversal guard → map `usr/bin/*` → `bin/*` |
-| locked (pin present) | reproduce *exactly*: fetch that version, hash the `.deb`, fail `A04` on mismatch; if no configured mirror serves it anymore, fail `A03` with that as the message |
+| locked (pin present) | reproduce *exactly*: fetch `locked.version`, stage it, recompute the canonical tree hash of the staged payload (mirroring the core's algorithm) and fail `A04` on mismatch against `locked.sha256`; if no configured mirror serves it anymore, fail `A03` with that as the message |
 | capabilities | `{"throttle": {}}` — apt mirrors don't rate-limit like APIs; an empty map is the honest declaration |
-| provenance | every fetch response carries `result.provenance = {apt_version, mirror, package, version, sha256, filename}` |
+| provenance | every fetch response carries `result.provenance = {apt_version, mirror, package, version, sha256 (of the .deb), filename}` |
+
+Hashes, disambiguated: `locked.sha256` is the **core's canonical tree
+hash of the previously staged payload** (not the .deb hash) — so the
+locked check runs *after* staging, on the staged tree. The .deb's own
+sha256 (verified against the Packages index on every fetch) is kept in
+`provenance.sha256`, and the advisory `result.sha256` reports the
+staged tree hash — the value the next pin will carry.
 
 A failed fetch still stages a deterministic `gripfetch-apt-failure.txt`
 note — an empty tree never masquerades as a successful fetch (the core
@@ -74,16 +81,15 @@ fail the fetch.
 | code | severity | meaning |
 | --- | --- | --- |
 | `A01` | error | package not in any apt index this host knows |
-| `A02` | error | requested version not available (nearby versions listed) |
 | `A03` | error | locked version no longer served by any configured mirror |
-| `A04` | error | sha256 mismatch (locked pin or Packages index vs downloaded bytes) |
+| `A04` | error | sha256 mismatch: staged tree vs `locked.sha256`, or Packages index vs downloaded `.deb` bytes |
 | `A05` | error | `apt-get download` failed (network/mirror/auth, tail attached) |
 | `A06` | error | the downloaded `.deb` is malformed |
 | `A07` | error | archive member would escape `dest_dir` — payload rejected |
 | `A08` | error | `apt-get` not on PATH (install apt or use another fetcher) |
 | `A09` | error | malformed request (missing `package`, unknown op, …) |
 | `W01` | warning | no version pinned — resolved to latest |
-| `W02` | warning | index carries no SHA256 — pin computed from the downloaded bytes |
+| `W02` | warning | index carries no SHA256 — .deb verified by downloaded bytes only (the pin is always the tree hash) |
 
 ## Frontend sugar
 

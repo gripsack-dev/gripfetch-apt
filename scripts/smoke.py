@@ -72,11 +72,15 @@ def main() -> int:
         assert len(responses) == 1, f"expected one response, got {len(responses)}"
         result = responses[0]["result"]
         version = result["version"]
-        sha256 = result["sha256"]
+        # result.sha256 = canonical tree hash (what the core pins);
+        # provenance.sha256 = the .deb transport hash
+        tree_reported = result["sha256"]
         provenance = result["provenance"]
         assert provenance["package"] == package
         assert provenance["version"] == version
-        assert provenance["sha256"] == sha256
+        assert provenance["sha256"] and provenance["sha256"] != tree_reported, (
+            "provenance carries the .deb sha256, distinct from the tree hash"
+        )
         assert provenance["mirror"], "provenance must name the mirror"
         assert provenance["apt_version"], "provenance must name the apt version"
         staged_bin = dest / "bin" / package
@@ -85,8 +89,17 @@ def main() -> int:
         resolved_latest = any(d["code"] == "W01" for d in diagnostics)
         assert resolved_latest, "an unpinned fetch must warn that it resolved latest"
         hash_one = tree_hash(dest)
+        assert tree_reported == hash_one, "response sha256 must BE the staged tree hash"
         print(f"  1. unpinned fetch ok: {package} {version} from {provenance['mirror']}")
-        print(f"     deb sha256 {sha256[:16]}…  tree {hash_one[:12]}…  bin/{package} executable")
+        print(
+            f"     deb sha256 {provenance['sha256'][:16]}…  "
+            f"tree {hash_one[:12]}…  bin/{package} executable"
+        )
+
+    # capture what the core would pin: url + version + tree hash
+    # (the core records url/version from the response; locked.sha256
+    # is its canonical tree hash of the staged payload)
+    pin_url = result["url"]
 
     # 2. pinned to exactly that version: byte-identical tree
     with tempfile.TemporaryDirectory() as second:
@@ -100,17 +113,34 @@ def main() -> int:
         assert not any(d["code"] == "W01" for d in diagnostics), "pinned fetch must not re-resolve"
         hash_two = tree_hash(dest)
         assert hash_one == hash_two, "same pin must stage a byte-identical tree"
+        # the advisory response sha256 must BE the canonical tree hash
+        assert responses[0]["result"]["sha256"] == hash_two
         print(f"  2. pinned fetch ok: same tree hash {hash_two[:12]}… (reproducible)")
 
-    # 3. locked with a tampered sha256: loud A04, nothing staged as success
+    # 3. locked with the pin the core recorded (tree hash): reproduces
     with tempfile.TemporaryDirectory() as third:
         dest = Path(third)
         child, responses, diagnostics = exchange(
             binary,
             dest,
             {"package": package, "version": version},
+            locked={"url": pin_url, "version": version, "sha256": hash_one},
+        )
+        errors = [d for d in diagnostics if d.get("severity") == "error"]
+        assert child.returncode == 0, f"locked reproduce fetch exited {child.returncode}: {errors}"
+        assert not any(d.get("severity") == "error" for d in diagnostics)
+        assert tree_hash(dest) == hash_one, "locked fetch must reproduce the exact tree"
+        print("  3. locked reproduce ok: tree hash matches the pin")
+
+    # 4. locked with a tampered sha256: loud A04 after staging
+    with tempfile.TemporaryDirectory() as fourth:
+        dest = Path(fourth)
+        child, responses, diagnostics = exchange(
+            binary,
+            dest,
+            {"package": package, "version": version},
             locked={
-                "url": f"apt://{package}/{version}",
+                "url": pin_url,
                 "version": version,
                 "sha256": "0" * 64,
             },
@@ -118,7 +148,8 @@ def main() -> int:
         errors = [d for d in diagnostics if d.get("severity") == "error"]
         assert child.returncode != 0, "a hash mismatch must fail the exchange"
         assert any(d["code"] == "A04" for d in errors), f"expected A04, got: {errors}"
-        print("  3. tampered lock rejected: A04 hash mismatch, nonzero exit")
+        assert any("tree sha256" in d["message"] for d in errors), "A04 names the staged tree hash"
+        print("  4. tampered lock rejected: A04 tree-hash mismatch, nonzero exit")
 
     print("live smoke: PASS")
     return 0
