@@ -1,5 +1,12 @@
 # gripfetch-apt
 
+[![ci](https://github.com/gripsack-dev/gripfetch-apt/actions/workflows/ci.yml/badge.svg)](https://github.com/gripsack-dev/gripfetch-apt/actions/workflows/ci.yml)
+[![release](https://github.com/gripsack-dev/gripfetch-apt/actions/workflows/release.yml/badge.svg)](https://github.com/gripsack-dev/gripfetch-apt/actions/workflows/release.yml)
+[![crates.io](https://img.shields.io/crates/v/gripfetch-apt)](https://crates.io/crates/gripfetch-apt)
+[![pypi](https://img.shields.io/pypi/v/gripfetch-apt?label=pypi)](https://pypi.org/project/gripfetch-apt/)
+[![npm](https://img.shields.io/npm/v/gripfetch-apt)](https://www.npmjs.com/package/gripfetch-apt)
+[![conformance](https://img.shields.io/badge/gripfetch--conformance-9%2F9-green)](https://github.com/gripsack-dev/gripfetch-conformance)
+
 A [gripsack](https://github.com/gripsack-dev/gripsack) fetcher plugin that
 fetches **Debian packages through the host's apt** — it *wraps* apt
 (`apt-cache`, `apt-get download`), never bundles one and never reimplements
