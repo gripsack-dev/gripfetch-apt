@@ -40,7 +40,9 @@ jobs:
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           mkdir -p dist
-          docker compose run --build --rm \
+          # build args interpolate from the shell env, not -e
+          VERSION="${VERSION}" TARGET="${{ matrix.target }}" \
+            docker compose run --build --rm \
             -e "VERSION=${VERSION}" \
             -e "TARGET=${{ matrix.target }}" \
             release
