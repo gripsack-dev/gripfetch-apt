@@ -1,0 +1,32 @@
+# Release packaging service (driven by .github/workflows/release.yml):
+#   docker compose run --build --rm -e VERSION=0.1.0 -e TARGET=x86_64-unknown-linux-musl release
+#
+# Asset contract (gripsack 0.14 plugin lifecycle, plan/0012):
+#   gripfetch-apt-<version>-<triple>.tar.gz  +  <same>.sha256
+# with the `gripfetch-apt` binary at the tarball ROOT (the provisioner
+# looks for it there or under bin/).
+
+services:
+  release:
+    build:
+      context: .
+      args:
+        TARGET: ${TARGET}
+    environment:
+      - VERSION
+      - TARGET
+    volumes:
+      - ./dist:/dist
+    entrypoint:
+      - sh
+      - -eu
+      - -c
+      - |
+        PKG="gripfetch-apt-$${VERSION}-$${TARGET}"
+        staging="$$(mktemp -d)"
+        install -m755 "target/$${TARGET}/release/gripfetch-apt" "$$staging/gripfetch-apt"
+        mkdir -p /dist
+        tar -czf "/dist/$${PKG}.tar.gz" -C "$$staging" gripfetch-apt
+        cd /dist
+        sha256sum "$${PKG}.tar.gz" > "$${PKG}.tar.gz.sha256"
+        ls -la

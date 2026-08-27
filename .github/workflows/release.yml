@@ -1,0 +1,149 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+# Two tags cut at once race the release; serialize — the newer waits.
+concurrency:
+  group: release-gripfetch-apt
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # 4-target matrix (the plugin lifecycle contract, gripsack 0.14):
+  # assets gripfetch-apt-<version>-<triple>.tar.gz + .sha256 sidecars.
+  # musl for linux static; the docker path needs no cross config —
+  # rust:alpine is multi-arch, aarch64 builds natively on the arm runner.
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: x86_64-unknown-linux-musl, runner: ubuntu-latest, docker: true }
+          - { target: aarch64-unknown-linux-musl, runner: ubuntu-24.04-arm, docker: true }
+          # both darwin targets on the arm runner — x86_64 cross-compiles
+          # with the stock Xcode
+          - { target: x86_64-apple-darwin, runner: macos-14, cross: true }
+          - { target: aarch64-apple-darwin, runner: macos-14 }
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build and package (linux musl, docker)
+        if: matrix.docker
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          mkdir -p dist
+          docker compose run --build --rm \
+            -e "VERSION=${VERSION}" \
+            -e "TARGET=${{ matrix.target }}" \
+            release
+
+      - name: Build and package (macOS, native)
+        if: "!matrix.docker"
+        run: |
+          rustup target add ${{ matrix.target }}
+          cargo build --release --locked --target ${{ matrix.target }}
+          VERSION="${GITHUB_REF_NAME#v}"
+          PKG="gripfetch-apt-$VERSION-${{ matrix.target }}"
+          staging="$(mktemp -d)"
+          # the provisioner expects the binary at the tarball root
+          install -m755 "target/${{ matrix.target }}/release/gripfetch-apt" "$staging/gripfetch-apt"
+          mkdir -p dist
+          tar -czf "dist/$PKG.tar.gz" -C "$staging" gripfetch-apt
+          (cd dist && shasum -a 256 "$PKG.tar.gz" > "$PKG.tar.gz.sha256")
+
+      - name: "Verify binary (linux: must be fully static)"
+        if: matrix.docker
+        run: |
+          cd dist
+          sha256sum -c gripfetch-apt-*.tar.gz.sha256
+          tmp="$(mktemp -d)"
+          tar -xzf gripfetch-apt-*-${{ matrix.target }}.tar.gz -C "$tmp"
+          file "$tmp/gripfetch-apt"
+          ! ldd "$tmp/gripfetch-apt" 2>&1 | grep -q "=>"
+          "$tmp/gripfetch-apt" --version
+
+      - name: "Verify binary (macOS: system libs only)"
+        if: "!matrix.docker"
+        run: |
+          cd dist
+          shasum -a 256 -c gripfetch-apt-*.tar.gz.sha256
+          tmp="$(mktemp -d)"
+          tar -xzf gripfetch-apt-*-${{ matrix.target }}.tar.gz -C "$tmp"
+          file "$tmp/gripfetch-apt"
+          otool -L "$tmp/gripfetch-apt"
+          ! otool -L "$tmp/gripfetch-apt" | grep -qvE "libSystem|libiconv|CoreFoundation|Security|SystemConfiguration"
+          "$tmp/gripfetch-apt" --version
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist-${{ matrix.target }}
+          path: dist/*
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Assemble artifacts
+        run: mkdir -p dist
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: dist-*
+          path: dist
+          merge-multiple: true
+
+      - name: Verify the full 4-target matrix arrived
+        run: |
+          ls -la dist/
+          count="$(ls dist/gripfetch-apt-*.tar.gz | wc -l)"
+          sidecars="$(ls dist/gripfetch-apt-*.tar.gz.sha256 | wc -l)"
+          test "$count" -eq 4 || { echo "::error::expected 4 platform tarballs, got $count"; exit 1; }
+          test "$sidecars" -eq 4 || { echo "::error::expected 4 sha256 sidecars, got $sidecars"; exit 1; }
+
+      # crates.io before the GitHub release: it is the irreversible
+      # artifact. The guard fails a mistagged release instead of
+      # publishing the wrong version. Skipped entirely while
+      # CARGO_REGISTRY_TOKEN is unset — the owner adds the secret.
+      - name: Tag must match the crate version
+        run: |
+          pkg="$(cargo metadata --no-deps --format-version 1 \
+            | jq -r '.packages[] | select(.name == "gripfetch-apt") | .version')"
+          test "v$pkg" = "$GITHUB_REF_NAME" || {
+            echo "::error::tag $GITHUB_REF_NAME != crate version v$pkg"; exit 1; }
+
+      - name: Publish to crates.io
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          HAS_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        if: env.HAS_REGISTRY_TOKEN != ''
+        run: |
+          # re-runs tolerate "already exists"; anything else fails loudly
+          ok=""
+          for attempt in 1 2 3 4 5; do
+            if out="$(cargo publish --locked 2>&1)"; then ok=1; break; fi
+            echo "$out" | tail -5
+            if echo "$out" | grep -q "already exists"; then
+              echo "gripfetch-apt already published — skipping"; ok=1; break
+            fi
+            echo "::warning::publish failed (attempt $attempt); backing off"
+            sleep 60
+          done
+          [ -n "$ok" ] || { echo "::error::failed to publish gripfetch-apt"; exit 1; }
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --title "gripfetch-apt ${GITHUB_REF_NAME#v}" \
+            --generate-notes

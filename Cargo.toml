@@ -1,0 +1,23 @@
+[package]
+name = "gripfetch-apt"
+version = "0.1.0"
+edition = "2021"
+description = "gripsack fetcher plugin: Debian packages via the host's apt — wraps, never reimplements"
+license = "MIT"
+repository = "https://github.com/gripsack-dev/gripfetch-apt"
+readme = "README.md"
+keywords = ["gripsack", "gripfetch", "apt", "debian", "fetcher"]
+categories = ["command-line-utilities"]
+
+# Minimal, pure-Rust deps: NDJSON stdio, .deb ar+tar extraction with
+# gz/xz/zst payloads, hashing. No C toolchain needed to build.
+[dependencies]
+flate2 = "1.1"
+lzma-rs = "0.3"
+ruzstd = "0.8"
+serde_json = "1.0"
+sha2 = "0.10"
+tar = "0.4"
+
+[profile.release]
+strip = true

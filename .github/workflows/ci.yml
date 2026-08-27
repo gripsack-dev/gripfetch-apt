@@ -1,0 +1,74 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: rust-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+
+      - name: Format
+        run: cargo fmt --check
+      - name: Clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Unit + exchange tests
+        run: cargo test --locked
+
+      - name: Conformance suite (all checks must pass)
+        run: |
+          cargo build --locked
+          git clone --depth 1 https://github.com/gripsack-dev/gripfetch-conformance /tmp/conformance
+          cd /tmp/conformance && uv run gripfetch-conformance "$OLDPWD/target/debug/gripfetch-apt"
+
+      - name: Live apt smoke (real hello fetch, pinned + unpinned)
+        run: python3 scripts/smoke.py target/debug/gripfetch-apt hello
+
+  frontend-py:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          working-directory: frontend-py
+      - name: Pytest
+        working-directory: frontend-py
+        run: |
+          uv sync --locked
+          uv run --locked --no-sync pytest -q
+
+  frontend-ts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: frontend-ts/package-lock.json
+      - name: Node tests
+        working-directory: frontend-ts
+        run: |
+          npm ci
+          npm test
