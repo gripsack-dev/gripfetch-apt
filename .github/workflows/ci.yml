@@ -35,11 +35,13 @@ jobs:
       - name: Unit + exchange tests
         run: cargo test --locked
 
+      - uses: astral-sh/setup-uv@v7
+
       - name: Conformance suite (all checks must pass)
         run: |
           cargo build --locked
           git clone --depth 1 https://github.com/gripsack-dev/gripfetch-conformance /tmp/conformance
-          cd /tmp/conformance && uv run gripfetch-conformance "$OLDPWD/target/debug/gripfetch-apt"
+          uv run --project /tmp/conformance gripfetch-conformance "$GITHUB_WORKSPACE/target/debug/gripfetch-apt"
 
       - name: Live apt smoke (real hello fetch, pinned + unpinned)
         run: python3 scripts/smoke.py target/debug/gripfetch-apt hello
