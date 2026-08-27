@@ -168,9 +168,11 @@ jobs:
 
       - name: Publish the typescript sugar to npm
         working-directory: frontend-ts
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
+          echo "//registry.npmjs.org/:_authToken=${{ secrets.NPM_TOKEN }}" > ~/.npmrc
           npm ci
           npm test
-          npm publish --access public
+          out="$(npm publish --access public 2>&1)" || {
+            echo "$out" | grep -q "cannot publish over the previously published"               && { echo "already published — skipping"; exit 0; }
+            echo "$out"; exit 1;
+          }
