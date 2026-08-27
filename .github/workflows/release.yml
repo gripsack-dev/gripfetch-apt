@@ -149,3 +149,26 @@ jobs:
           gh release create "$GITHUB_REF_NAME" dist/* \
             --title "gripfetch-apt ${GITHUB_REF_NAME#v}" \
             --generate-notes
+
+  publish-sugar:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Publish the python sugar to PyPI
+        working-directory: frontend-py
+        env:
+          UV_PUBLISH_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+        run: |
+          uv build
+          uv publish
+
+      - name: Publish the typescript sugar to npm
+        working-directory: frontend-ts
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          npm ci
+          npm test
+          npm publish --access public
