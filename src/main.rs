@@ -156,7 +156,7 @@ fn fetch_inner(request: &Request) -> Result<Value, Fail> {
                         locked.version.as_deref().unwrap_or("")
                     ),
                 )
-                .with_help("the mirror content changed under the pin; `grip update` re-pins, or pin the version your audit approved"));
+                .with_help("the payload staged for this pin differs from what the lock recorded — upstream drifted, or the fetcher staged differently; `grip update` re-pins"));
             }
         }
     }

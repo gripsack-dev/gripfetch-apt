@@ -1,6 +1,6 @@
 [package]
 name = "gripfetch-apt"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "gripsack fetcher plugin: Debian packages via the host's apt — wraps, never reimplements"
 license = "MIT"
